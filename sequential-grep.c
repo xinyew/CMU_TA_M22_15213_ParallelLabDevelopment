@@ -14,32 +14,40 @@
 
 // GLOBALS
 bool recursive = false;
+bool print_line_numbers = false;
 char *pattern = NULL;
+char *usage = "Usage:\n"
+              "./grep [-rh]\n"
+              "-h     Show help message\n"
+              "-r     Recursively search through directory structure\n"
+              "-n     Include line numbers\n";
 
-char *parse_args(int argc, char *argv[]) {
-    char *usage = "Usage:\n"
-                  "./grep [-rh]\n"
-                  "-E     Enable extended regex\n"
-                  "-h     Show help message\n"
-                  "-r     Recursively search through directory structure\n";
+char *parse_args(int argc, char **argv) {
     int opt;
 
-    while ((opt = getopt(argc, argv, "r")) != -1) {
+    while ((opt = getopt(argc, argv, "rn")) != -1) {
         switch (opt) {
             case 'r':
                 recursive = true;
                 break;
+            
+            case 'h':
+                printf("%s", usage);
+                break;
+            
+            case 'n':
+                print_line_numbers = true;
+                break;
 
             case '?':
-                printf("Error parsing command line arguments\n %s", usage);
+                printf("Error parsing command line arguments\n%s", usage);
                 exit(1);
         }
     }
-    printf("argc: %d, optind: %d\n", argc, optind);
 
     // If there are not two arguments left (pattern and file name)
     if (argc - optind != 2) {
-        fprintf(stderr, "Missing either pattern or file name in parsing command line arguments\n %s", usage);
+        fprintf(stderr, "Missing either pattern or file name in parsing command line arguments\n%s", usage);
         exit(1);
     }
 
@@ -53,20 +61,32 @@ void grep_file(const char *file_name) {
     char error_msg[100];   
     int regex_errorno; // value returned from regex library functions, zero indicates success
     regex_t regex; // tmp variable to conduct regex operations
+    const char *file_display_name = file_name + 2; // Remove proceeding "./" in directory string
 
     if (regcomp(&regex, pattern, 0)) {
-        fprintf(stderr, "regex compile failed\n");
+        fprintf(stderr, "Regex compile failed\n");
         exit(1);
     }
     if ((file = fopen(file_name, "r")) == NULL) {
         perror("Error Opening File");        
         return;
     }
-        
+
+    int line_number = 1;    
     while (fgets(buf, BUF_SIZE, file)) {
         regex_errorno = regexec(&regex, buf, 0, NULL, 0);
         if (!regex_errorno) {
-            printf("%s\n", buf);
+            if (recursive) {
+                if (print_line_numbers)
+                    printf("%s:%d:%s\n", file_display_name, line_number, buf);
+                else 
+                    printf("%s:%s\n", file_display_name, buf);
+            } else {
+                if (print_line_numbers)
+                    printf("%d:%s\n", line_number, buf);
+                else
+                    printf("%s\n", buf);
+            }
         } else if (regex_errorno == REG_NOMATCH) {
             continue;
         } else {
@@ -74,11 +94,12 @@ void grep_file(const char *file_name) {
             fprintf(stderr, "match failed: %s\n", error_msg);
             exit(1);
         }
+        line_number++;
     }
 }
 
 int grep_file_wrapper(const char *filename, const struct stat *statptr,
-    int fileflags, struct FTW *pfwt)
+    int fileflags, struct FTW *pfwt) 
 {
     if (fileflags == FTW_F)
         grep_file(filename);
@@ -103,12 +124,12 @@ int main(int argc, char *argv[]) {
     }
 
     if (recursive && S_ISREG(sb.st_mode)) {
-        fprintf(stderr, "%s is not a directory", file_name);
+        fprintf(stderr, "%s is not a directory\n%s", file_name, usage);
         exit(1);
     }
 
     if (!recursive && S_ISDIR(sb.st_mode)) {
-        fprintf(stderr, "%s is not a file", file_name);
+        fprintf(stderr, "%s is not a file\n%s", file_name, usage);
         exit(1);
     }
 

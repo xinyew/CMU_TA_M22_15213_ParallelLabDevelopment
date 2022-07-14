@@ -9,6 +9,7 @@
 #include <regex.h>
 #include <pthread.h>
 #include <errno.h>
+#include <thread-safe-linked-list.h>
 
 #define MAX_FILE_NUM 4096
 #define BUF_SIZE 4096
@@ -24,6 +25,22 @@ typedef struct file_grep_task {
     long end;
 } file_grep_task_t;
 
+typedef struct file_match {
+    char **matches;
+    int order;
+} file_match_t;
+
+typedef struct {
+   char *file_name;
+   int task_num;
+} task_t;
+
+typedef struct {
+    char *output;
+    int output_num
+} output_t;
+
+
 // GLOBALS
 bool recursive = false;
 bool print_line_numbers = false;
@@ -33,7 +50,9 @@ const char *usage = "Usage:\n"
                     "-h     Show help message\n"
                     "-r     Recursively search through directory structure\n"
                     "-n     Include line numbers\n";
-pthread_t work_thread_pool[WORK_THREAD_NUM];
+pthread_t thread_pool[WORK_THREAD_NUM];
+linked_list_t *task_list;
+linked_list_t *output_list;
 
 char *parse_args(int argc, char **argv) {
     int opt;
@@ -43,11 +62,11 @@ char *parse_args(int argc, char **argv) {
             case 'r':
                 recursive = true;
                 break;
-            
+
             case 'h':
                 printf("%s", usage);
                 break;
-            
+
             case 'n':
                 print_line_numbers = true;
                 break;
@@ -70,8 +89,8 @@ char *parse_args(int argc, char **argv) {
 
 void grep_file(const char *file_name) {
     FILE *file;
-    char buf[BUF_SIZE]; 
-    char error_msg[100];   
+    char buf[BUF_SIZE];
+    char error_msg[100];
     int regex_errorno; // value returned from regex library functions, zero indicates success
     regex_t regex; // tmp variable to conduct regex operations
     const char *file_display_name = file_name + 2; // Remove proceeding "./" in directory string
@@ -81,18 +100,18 @@ void grep_file(const char *file_name) {
         exit(1);
     }
     if ((file = fopen(file_name, "r")) == NULL) {
-        perror("Error Opening File");        
+        perror("Error Opening File");
         return;
     }
 
-    int line_number = 1;    
+    int line_number = 1;
     while (fgets(buf, BUF_SIZE, file)) {
         regex_errorno = regexec(&regex, buf, 0, NULL, 0);
         if (!regex_errorno) {
             if (recursive) {
                 if (print_line_numbers)
                     printf("%s:%d:%s\n", file_display_name, line_number, buf);
-                else 
+                else
                     printf("%s:%s\n", file_display_name, buf);
             } else {
                 if (print_line_numbers)
@@ -112,11 +131,25 @@ void grep_file(const char *file_name) {
 }
 
 int grep_file_wrapper(const char *filename, const struct stat *statptr,
-    int fileflags, struct FTW *pfwt) 
+    int fileflags, struct FTW *pfwt)
 {
     if (fileflags == FTW_F)
         grep_file(filename);
 
+    return 0; // Tells nftw to continue
+}
+
+int add_to_task_list(const char *filename, const struct stat *statptr,
+    int fileflags, struct FTW *pfwt)
+{
+    if (fileflags == FTW_F) {
+        task_t *task;
+        if ((task = malloc(sizeof(task_t))) == NULL) {
+            perror("malloc failed in pgrep.c");
+            exit(1);
+        }
+        linked_list_insert_front(task_list, task);
+    }
     return 0; // Tells nftw to continue
 }
 
@@ -131,27 +164,43 @@ void grepFileParallel(const char *filename) {
     if (info.st_size < threshold * MB) {
         printf("The file is less than 2MB\n");
     }
-    
+
     FILE *fp = NULL;
     int i = 0;
     int posAddress = 0;
     long blockSize = info.st_size / FILE_THREAD_NUM;
-    
+
 }
 
 void grep_dir(char *path) {
+    task_list = linked_list_new();
+    output_list = linked_list_new();
     /* Iterates over the directory structure starting at path and
     calls grep_file_wrapper on each file */
-    nftw(path, grep_file_wrapper, MAX_FILE_NUM, 0);
+    nftw(path, add_to_task_list, MAX_FILE_NUM, 0);
+}
+
+void *file_reader(void *arg) {
+    while (true) {
+        task_t task = task_list_remove();
+        // No more tasks left
+        if (task.task_num == -1)
+            pthread_exit(NULL);
+    }
 }
 
 void init_thread_pool() {
     int err;
-    
+
     for (int i = 0; i < WORK_THREAD_NUM; i++) {
-        if ((err = pthread_create(&work_thread_pool[i], NULL, worker_fun, NULL)) != 0) {
+        if ((err = pthread_create(&thread_pool[i], NULL, file_reader, NULL)) != 0) {
             errno = err;
             perror("pthread_create error");
+            exit(1);
+        }
+        if (pthread_detach(&thread_pool[i]) != 0) {
+            perror("pthread_detach error");
+            exit(1);
         }
     }
 }

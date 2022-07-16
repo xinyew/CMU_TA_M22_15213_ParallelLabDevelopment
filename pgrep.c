@@ -1,3 +1,8 @@
+/**
+Simple implementation of the unix command line tool grep, but it's 
+multithreaded! 
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <ftw.h>
@@ -9,7 +14,7 @@
 #include <regex.h>
 #include <pthread.h>
 #include <errno.h>
-#include <thread-safe-linked-list.h>
+#include "thread-safe-linked-list.h"
 
 #define MAX_FILE_NUM 4096
 #define BUF_SIZE 4096
@@ -19,16 +24,16 @@
 #define KB 1024
 #define MB (1024*1024)
 
-typedef struct file_grep_task {
-    char *filename;
-    long start;
-    long end;
-} file_grep_task_t;
+// typedef struct file_grep_task {
+//     char *filename;
+//     long start;
+//     long end;
+// } file_grep_task_t;
 
-typedef struct file_match {
-    char **matches;
-    int order;
-} file_match_t;
+// typedef struct file_match {
+//     char **matches;
+//     int order;
+// } file_match_t;
 
 typedef struct {
    char *file_name;
@@ -36,8 +41,8 @@ typedef struct {
 } task_t;
 
 typedef struct {
-    char *output;
-    int output_num
+    linked_list_t *output;
+    int output_num;
 } output_t;
 
 
@@ -45,18 +50,19 @@ typedef struct {
 bool recursive = false;
 bool print_line_numbers = false;
 char *pattern = NULL;
-const char *usage = "Usage:\n"
-                    "./grep [-rh]\n"
+const char *usage = "Usage: ./pgrep [-rh] [pattern] [file] \n"
                     "-h     Show help message\n"
                     "-r     Recursively search through directory structure\n"
                     "-n     Include line numbers\n";
 pthread_t thread_pool[WORK_THREAD_NUM];
 linked_list_t *task_list;
 linked_list_t *output_list;
+int next_output = 0;
+bool files_added_to_task_list = false;
+bool files_added_to_output_list = false;
 
 char *parse_args(int argc, char **argv) {
     int opt;
-
     while ((opt = getopt(argc, argv, "rn")) != -1) {
         switch (opt) {
             case 'r':
@@ -87,105 +93,144 @@ char *parse_args(int argc, char **argv) {
     return argv[optind + 1];
 }
 
-void grep_file(const char *file_name) {
+linked_list_t *grep_file(const char *file_name) {
     FILE *file;
-    char buf[BUF_SIZE];
-    char error_msg[100];
+    char *buf;
+    size_t read;
     int regex_errorno; // value returned from regex library functions, zero indicates success
     regex_t regex; // tmp variable to conduct regex operations
     const char *file_display_name = file_name + 2; // Remove proceeding "./" in directory string
+
+    linked_list_t *output = linked_list_new();
 
     if (regcomp(&regex, pattern, 0)) {
         fprintf(stderr, "Regex compile failed\n");
         exit(1);
     }
     if ((file = fopen(file_name, "r")) == NULL) {
+        printf("%s\n", file_name);
         perror("Error Opening File");
-        return;
+        exit(1);
     }
 
     int line_number = 1;
-    while (fgets(buf, BUF_SIZE, file)) {
+    while ((read = getline(&buf, NULL, file)) != -1) {
         regex_errorno = regexec(&regex, buf, 0, NULL, 0);
-        if (!regex_errorno) {
-            if (recursive) {
-                if (print_line_numbers)
-                    printf("%s:%d:%s\n", file_display_name, line_number, buf);
-                else
-                    printf("%s:%s\n", file_display_name, buf);
-            } else {
-                if (print_line_numbers)
-                    printf("%d:%s\n", line_number, buf);
-                else
-                    printf("%s\n", buf);
-            }
-        } else if (regex_errorno == REG_NOMATCH) {
+        if (regex_errorno == REG_NOMATCH)
             continue;
-        } else {
-            regerror(regex_errorno, &regex, error_msg, sizeof(error_msg));
-            fprintf(stderr, "match failed: %s\n", error_msg);
+
+        /* num bytes read + size of file name + 3 bytes for colons, line
+        number + 1 byte for \n + 1 byte for nul termiantor */
+        char *line;
+        if ((line = calloc(1, read + strlen(file_display_name) + 3 + 1 + 1)) == NULL) {
+            perror("malloc failed in pgrep");
             exit(1);
         }
+
+        if (recursive) {
+            if (print_line_numbers) 
+                sprintf(line, "%s:%d:%s\n", file_display_name, line_number, buf);
+            else
+                sprintf(line, "%s:%s\n", file_display_name, buf);
+        } else {
+            if (print_line_numbers)
+                sprintf(line, "%d:%s\n", line_number, buf);
+            else
+                sprintf(line, "%s\n", buf);
+        }
+        linked_list_insert_back(output, line);
         line_number++;
     }
-}
-
-int grep_file_wrapper(const char *filename, const struct stat *statptr,
-    int fileflags, struct FTW *pfwt)
-{
-    if (fileflags == FTW_F)
-        grep_file(filename);
-
-    return 0; // Tells nftw to continue
+    return output;
 }
 
 int add_to_task_list(const char *filename, const struct stat *statptr,
     int fileflags, struct FTW *pfwt)
 {
+    static int task_num = 0;
+    
     if (fileflags == FTW_F) {
         task_t *task;
         if ((task = malloc(sizeof(task_t))) == NULL) {
             perror("malloc failed in pgrep.c");
             exit(1);
         }
+        task->task_num = task_num++;
+        task->file_name = strdup(filename);
         linked_list_insert_front(task_list, task);
     }
     return 0; // Tells nftw to continue
 }
 
 // function to grep a file bigger than 2MB
-void grepFileParallel(const char *filename) {
-    struct stat info;
-    if (lstat(filename, &info) == -1) {
-        printf("Error: could not open the specified file: %s\n", filename);
-        exit(1);
-    }
+// void grepFileParallel(const char *filename) {
+//     struct stat info;
+//     if (lstat(filename, &info) == -1) {
+//         printf("Error: could not open the specified file: %s\n", filename);
+//         exit(1);
+//     }
 
-    if (info.st_size < threshold * MB) {
-        printf("The file is less than 2MB\n");
-    }
+//     if (info.st_size < threshold * MB) {
+//         printf("The file is less than 2MB\n");
+//     }
 
-    FILE *fp = NULL;
-    int i = 0;
-    int posAddress = 0;
-    long blockSize = info.st_size / FILE_THREAD_NUM;
+//     FILE *fp = NULL;
+//     int i = 0;
+//     int posAddress = 0;
+//     long blockSize = info.st_size / FILE_THREAD_NUM;
+// }
 
+bool is_next_output(output_t *output) {
+    return output->output_num == next_output;
 }
 
-void grep_dir(char *path) {
-    task_list = linked_list_new();
-    output_list = linked_list_new();
-    /* Iterates over the directory structure starting at path and
-    calls grep_file_wrapper on each file */
-    nftw(path, add_to_task_list, MAX_FILE_NUM, 0);
+void print_output() {
+    /* Can't test for task list being empty because of state
+    where all tasks have been removed, but a thread is still parsing
+    a file and hasn't yet written it to output list. files_added_to_output_list
+    is only set to true after writing to output list */
+    while (!(linked_list_empty(output_list) && files_added_to_output_list)) {
+        output_t *output = linked_list_remove_comp(output_list, (comparator_fn *)is_next_output);
+        if (output == NULL)
+            continue;
+        linked_list_t *list = output->output;
+        while (!linked_list_empty(list)) {
+            char *line = linked_list_remove_front(list);
+            printf("%s", line);
+            free(line);
+        }
+        linked_list_free(list, NULL);
+        next_output++;
+    }
+    linked_list_free(output_list, NULL);
+    linked_list_free(task_list, NULL);
 }
 
 void *file_reader(void *arg) {
+    if (pthread_detach(pthread_self()) != 0) {
+        perror("thread detach error");
+        exit(1);
+    }
     while (true) {
-        task_t task = task_list_remove();
-        // No more tasks left
-        if (task.task_num == -1)
-            pthread_exit(NULL);
+        if (linked_list_empty(task_list) && files_added_to_task_list) {
+            files_added_to_output_list = true;
+            printf("Thread exiting\n");
+            pthread_exit(NULL); 
+        }
+        task_t *task = linked_list_remove_front(task_list);
+        if (task == NULL)
+            continue;
+        linked_list_t *res = grep_file(task->file_name);
+        free(task->file_name);
+        free(task);
+        output_t *output;
+        if ((output = malloc(sizeof(output_t))) == NULL) {
+            perror("malloc failed in pgrep.c");
+            exit(1); 
+        }
+        output->output = res;
+        output->output_num = task->task_num;
+        linked_list_insert_front(output_list, output);
     }
 }
 
@@ -198,11 +243,18 @@ void init_thread_pool() {
             perror("pthread_create error");
             exit(1);
         }
-        if (pthread_detach(&thread_pool[i]) != 0) {
-            perror("pthread_detach error");
-            exit(1);
-        }
     }
+}
+
+void grep_dir(char *path) {
+    task_list = linked_list_new();
+    output_list = linked_list_new();
+    /* Iterates over the directory structure starting at path and
+    calls grep_file_wrapper on each file */
+    init_thread_pool();
+    nftw(path, add_to_task_list, MAX_FILE_NUM, 0);
+    files_added_to_task_list = true;
+    print_output();
 }
 
 int main(int argc, char *argv[]) {

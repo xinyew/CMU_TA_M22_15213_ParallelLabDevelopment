@@ -1,6 +1,6 @@
 /**
-Simple implementation of the unix command line tool grep, but it's 
-multithreaded! 
+Simple implementation of the unix command line tool grep, but it's
+multithreaded!
  */
 
 #include <stdio.h>
@@ -63,14 +63,14 @@ bool files_added_to_output_list = false;
 
 char *parse_args(int argc, char **argv) {
     int opt;
-    while ((opt = getopt(argc, argv, "rn")) != -1) {
+    while ((opt = getopt(argc, argv, "hrn")) != -1) {
         switch (opt) {
-            case 'r':
-                recursive = true;
-                break;
-
             case 'h':
                 printf("%s", usage);
+                exit(0);
+
+            case 'r':
+                recursive = true;
                 break;
 
             case 'n':
@@ -103,21 +103,33 @@ linked_list_t *grep_file(const char *file_name) {
 
     linked_list_t *output = linked_list_new();
 
+    /* compiling regex pattern with error checking */
     if (regcomp(&regex, pattern, 0)) {
         fprintf(stderr, "Regex compile failed\n");
         exit(1);
     }
+
+    /* opening files with error checking */
     if ((file = fopen(file_name, "r")) == NULL) {
         printf("%s\n", file_name);
         perror("Error Opening File");
         exit(1);
     }
 
+    /* opening files with error checking */
+    buf = malloc(BUF_SIZE);
+    size_t buf_size = BUF_SIZE;
+    if (!buf) {
+        perror("malloc failed in pgrep");
+    }
     int line_number = 1;
-    while ((read = getline(&buf, NULL, file)) != -1) {
+    while ((read = getline(&buf, &buf_size, file)) != -1) {
         regex_errorno = regexec(&regex, buf, 0, NULL, 0);
-        if (regex_errorno == REG_NOMATCH)
+        if (!regex_errorno)
+            printf("%s\n", buf);
+        if (regex_errorno == REG_NOMATCH) {
             continue;
+        }
 
         /* num bytes read + size of file name + 3 bytes for colons, line
         number + 1 byte for \n + 1 byte for nul termiantor */
@@ -128,7 +140,7 @@ linked_list_t *grep_file(const char *file_name) {
         }
 
         if (recursive) {
-            if (print_line_numbers) 
+            if (print_line_numbers)
                 sprintf(line, "%s:%d:%s\n", file_display_name, line_number, buf);
             else
                 sprintf(line, "%s:%s\n", file_display_name, buf);
@@ -148,7 +160,7 @@ int add_to_task_list(const char *filename, const struct stat *statptr,
     int fileflags, struct FTW *pfwt)
 {
     static int task_num = 0;
-    
+
     if (fileflags == FTW_F) {
         task_t *task;
         if ((task = malloc(sizeof(task_t))) == NULL) {
@@ -191,8 +203,9 @@ void print_output() {
     is only set to true after writing to output list */
     while (!(linked_list_empty(output_list) && files_added_to_output_list)) {
         output_t *output = linked_list_remove_comp(output_list, (comparator_fn *)is_next_output);
-        if (output == NULL)
+        if (output == NULL) {
             continue;
+        }
         linked_list_t *list = output->output;
         while (!linked_list_empty(list)) {
             char *line = linked_list_remove_front(list);
@@ -215,7 +228,7 @@ void *file_reader(void *arg) {
         if (linked_list_empty(task_list) && files_added_to_task_list) {
             files_added_to_output_list = true;
             printf("Thread exiting\n");
-            pthread_exit(NULL); 
+            pthread_exit(NULL);
         }
         task_t *task = linked_list_remove_front(task_list);
         if (task == NULL)
@@ -226,7 +239,7 @@ void *file_reader(void *arg) {
         output_t *output;
         if ((output = malloc(sizeof(output_t))) == NULL) {
             perror("malloc failed in pgrep.c");
-            exit(1); 
+            exit(1);
         }
         output->output = res;
         output->output_num = task->task_num;

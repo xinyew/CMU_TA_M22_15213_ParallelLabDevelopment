@@ -1,6 +1,6 @@
 /**
-Simple implementation of the unix command line tool grep, but it's
-multithreaded!
+Simple implementation of the unix command line tool grep, but it's 
+multithreaded! 
  */
 
 #include <stdio.h>
@@ -59,18 +59,19 @@ linked_list_t *task_list;
 linked_list_t *output_list;
 int next_output = 0;
 bool files_added_to_task_list = false;
-bool files_added_to_output_list = false;
+pthread_mutex_t readers_finished_mut = PTHREAD_MUTEX_INITIALIZER;
+int readers_finished = 0;
 
 char *parse_args(int argc, char **argv) {
     int opt;
-    while ((opt = getopt(argc, argv, "hrn")) != -1) {
+    while ((opt = getopt(argc, argv, "rn")) != -1) {
         switch (opt) {
-            case 'h':
-                printf("%s", usage);
-                exit(0);
-
             case 'r':
                 recursive = true;
+                break;
+
+            case 'h':
+                printf("%s", usage);
                 break;
 
             case 'n':
@@ -95,7 +96,8 @@ char *parse_args(int argc, char **argv) {
 
 linked_list_t *grep_file(const char *file_name) {
     FILE *file;
-    char *buf;
+    char *buf = NULL;
+    size_t buf_size = 10;
     size_t read;
     int regex_errorno; // value returned from regex library functions, zero indicates success
     regex_t regex; // tmp variable to conduct regex operations
@@ -103,68 +105,58 @@ linked_list_t *grep_file(const char *file_name) {
 
     linked_list_t *output = linked_list_new();
 
-    /* compiling regex pattern with error checking */
     if (regcomp(&regex, pattern, 0)) {
         fprintf(stderr, "Regex compile failed\n");
         exit(1);
     }
-
-    /* opening files with error checking */
     if ((file = fopen(file_name, "r")) == NULL) {
         printf("%s\n", file_name);
         perror("Error Opening File");
         exit(1);
     }
 
-    /* opening files with error checking */
-    buf = malloc(BUF_SIZE);
-    size_t buf_size = BUF_SIZE;
-    if (!buf) {
-        perror("malloc failed in pgrep");
-    }
     int line_number = 1;
     while ((read = getline(&buf, &buf_size, file)) != -1) {
         regex_errorno = regexec(&regex, buf, 0, NULL, 0);
-        if (!regex_errorno)
-            printf("%s\n", buf);
         if (regex_errorno == REG_NOMATCH) {
             continue;
         }
-
         /* num bytes read + size of file name + 3 bytes for colons, line
         number + 1 byte for \n + 1 byte for nul termiantor */
         char *line;
         if ((line = calloc(1, read + strlen(file_display_name) + 3 + 1 + 1)) == NULL) {
-            perror("malloc failed in pgrep");
+            perror("malloc failed in pgrep: grep_file 2");
+            free(buf);
             exit(1);
         }
 
         if (recursive) {
-            if (print_line_numbers)
-                sprintf(line, "%s:%d:%s\n", file_display_name, line_number, buf);
+            if (print_line_numbers) 
+                sprintf(line, "%s:%d:%s", file_display_name, line_number, buf);
             else
-                sprintf(line, "%s:%s\n", file_display_name, buf);
+                sprintf(line, "%s:%s", file_display_name, buf);
         } else {
             if (print_line_numbers)
-                sprintf(line, "%d:%s\n", line_number, buf);
+                sprintf(line, "%d:%s", line_number, buf);
             else
-                sprintf(line, "%s\n", buf);
+                sprintf(line, "%s", buf);
         }
         linked_list_insert_back(output, line);
         line_number++;
     }
+    free(buf);
     return output;
 }
 
 int add_to_task_list(const char *filename, const struct stat *statptr,
-    int fileflags, struct FTW *pfwt)
+    int fileflags, struct FTW *pfwt) 
 {
     static int task_num = 0;
-
+    
     if (fileflags == FTW_F) {
         task_t *task;
         if ((task = malloc(sizeof(task_t))) == NULL) {
-            perror("malloc failed in pgrep.c");
+            perror("malloc failed in pgrep: add_to_task_list");
             exit(1);
         }
         task->task_num = task_num++;
@@ -201,11 +193,10 @@ void print_output() {
     where all tasks have been removed, but a thread is still parsing
     a file and hasn't yet written it to output list. files_added_to_output_list
     is only set to true after writing to output list */
-    while (!(linked_list_empty(output_list) && files_added_to_output_list)) {
+    while (!(linked_list_empty(output_list) && (readers_finished == WORK_THREAD_NUM))) {
         output_t *output = linked_list_remove_comp(output_list, (comparator_fn *)is_next_output);
-        if (output == NULL) {
+        if (output == NULL)
             continue;
-        }
         linked_list_t *list = output->output;
         while (!linked_list_empty(list)) {
             char *line = linked_list_remove_front(list);
@@ -226,9 +217,10 @@ void *file_reader(void *arg) {
     }
     while (true) {
         if (linked_list_empty(task_list) && files_added_to_task_list) {
-            files_added_to_output_list = true;
-            printf("Thread exiting\n");
-            pthread_exit(NULL);
+            pthread_mutex_lock(&readers_finished_mut);
+            readers_finished++;
+            pthread_mutex_unlock(&readers_finished_mut);
+            pthread_exit(NULL); 
         }
         task_t *task = linked_list_remove_front(task_list);
         if (task == NULL)
@@ -238,8 +230,8 @@ void *file_reader(void *arg) {
         free(task);
         output_t *output;
         if ((output = malloc(sizeof(output_t))) == NULL) {
-            perror("malloc failed in pgrep.c");
-            exit(1);
+            perror("malloc failed in pgrep: file_reader");
+            exit(1); 
         }
         output->output = res;
         output->output_num = task->task_num;

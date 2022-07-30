@@ -211,6 +211,12 @@ void *linked_list_remove_comp(linked_list_t *list, comparator_fn comp) {
         pthread_mutex_unlock(&list->mutex);
         return res;
     }
+
+    if (list->front->next == NULL) {
+        pthread_mutex_unlock(&list->mutex);
+        return NULL;
+    }
+
     // Iterate over the interior of the list
     for (linked_list_node_t *node = list->front->next; node != list->back; node = node->next) {
         if (comp(node->elem)) {

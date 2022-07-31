@@ -278,3 +278,17 @@ void linked_list_free(linked_list_t *list, free_fn elem_free) {
     pthread_mutex_destroy(&list->mutex);
     free(list);
 }
+/**
+ * @brief Traverses through the linked list and prints every element
+ * 
+ * @param list the linked list supplied from the user
+ * @param elem_print a function that takes in an element the user
+ * inserted into the list as argument and prints it out
+ */
+void linked_list_print(linked_list_t *list, print_fn elem_print) {
+    pthread_mutex_lock(&list->mutex);
+    for (linked_list_node_t *node = list->front; node != NULL; node = node->next) {
+        elem_print(node->elem);
+    }
+    pthread_mutex_unlock(&list->mutex);
+}

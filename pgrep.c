@@ -62,9 +62,17 @@ bool files_added_to_task_list = false;
 pthread_mutex_t readers_finished_mut = PTHREAD_MUTEX_INITIALIZER;
 int readers_finished = 0;
 
+void print_line(void *buf) {
+    printf("%s", (char *)buf);
+}
+
+void output_list_print(void *output) {
+    linked_list_print(((output_t *)output)->output, print_line);
+}
+
 char *parse_args(int argc, char **argv) {
     int opt;
-    while ((opt = getopt(argc, argv, "rn")) != -1) {
+    while ((opt = getopt(argc, argv, "rhn")) != -1) {
         switch (opt) {
             case 'r':
                 recursive = true;
@@ -101,7 +109,6 @@ linked_list_t *grep_file(const char *file_name) {
     size_t read;
     int regex_errorno; // value returned from regex library functions, zero indicates success
     regex_t regex; // tmp variable to conduct regex operations
-    const char *file_display_name = file_name + 2; // Remove proceeding "./" in directory string
 
     linked_list_t *output = linked_list_new();
 
@@ -124,7 +131,7 @@ linked_list_t *grep_file(const char *file_name) {
         /* num bytes read + size of file name + 3 bytes for colons, line
         number + 1 byte for \n + 1 byte for nul termiantor */
         char *line;
-        if ((line = calloc(1, read + strlen(file_display_name) + 3 + 1 + 1)) == NULL) {
+        if ((line = calloc(1, read + strlen(file_name) + 3 + 1 + 1)) == NULL) {
             perror("malloc failed in pgrep: grep_file 2");
             free(buf);
             exit(1);
@@ -132,9 +139,9 @@ linked_list_t *grep_file(const char *file_name) {
 
         if (recursive) {
             if (print_line_numbers) 
-                sprintf(line, "%s:%d:%s", file_display_name, line_number, buf);
+                sprintf(line, "%s:%d:%s", file_name, line_number, buf);
             else
-                sprintf(line, "%s:%s", file_display_name, buf);
+                sprintf(line, "%s:%s", file_name, buf);
         } else {
             if (print_line_numbers)
                 sprintf(line, "%d:%s", line_number, buf);
@@ -144,6 +151,7 @@ linked_list_t *grep_file(const char *file_name) {
         linked_list_insert_back(output, line);
         line_number++;
     }
+    fclose(file);
     free(buf);
     return output;
 }

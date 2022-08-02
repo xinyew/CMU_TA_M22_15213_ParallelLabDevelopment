@@ -58,6 +58,8 @@ pthread_t thread_pool[WORK_THREAD_NUM];
 linked_list_t *task_list;
 linked_list_t *output_list;
 
+pthread_mutex_t task_num_mut;
+static int task_num = 0;
 
 int next_output = 0;
 pthread_mutex_t next_output_mut;
@@ -171,7 +173,6 @@ linked_list_t *grep_file(const char *file_name) {
 
 int add_to_task_list(const char *filename, const struct stat *statptr,
     int fileflags, struct FTW *pfwt) {
-    static int task_num = 0;
     
     if (fileflags == FTW_F) {
         task_t *task;
@@ -179,7 +180,10 @@ int add_to_task_list(const char *filename, const struct stat *statptr,
             perror("malloc failed in pgrep: add_to_task_list");
             exit(1);
         }
+        pthread_mutex_lock(&task_num_mut);
         task->task_num = task_num++;
+        pthread_mutex_unlock(&task_num_mut);
+        printf("set num: %d\n", task->task_num);
         task->file_name = strdup(filename);
         linked_list_insert_front(task_list, task);
     }
@@ -235,8 +239,8 @@ void print_output() {
         linked_list_free(list, NULL);
 
         pthread_mutex_lock(&next_output_mut);
-        next_output++;
         printf("loop: %d\n", next_output);
+        next_output++;
         pthread_mutex_unlock(&next_output_mut);
     }
     linked_list_free(output_list, NULL);
@@ -298,6 +302,7 @@ void grep_dir(char *path) {
 int main(int argc, char *argv[]) {
     struct stat sb;
     pthread_mutex_init(&readers_finished_mut, NULL);
+    pthread_mutex_init(&task_num_mut, NULL);
     pthread_mutex_init(&next_output_mut, NULL);
 
     char *file_name = parse_args(argc, argv);

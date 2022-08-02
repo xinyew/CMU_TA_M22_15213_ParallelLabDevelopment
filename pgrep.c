@@ -57,19 +57,31 @@ const char *usage = "Usage: ./pgrep [-rh] [pattern] [file] \n"
 pthread_t thread_pool[WORK_THREAD_NUM];
 linked_list_t *task_list;
 linked_list_t *output_list;
+
+
 int next_output = 0;
+pthread_mutex_t next_output_mut;
 bool files_added_to_task_list = false;
-pthread_mutex_t readers_finished_mut = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t readers_finished_mut;
 int readers_finished = 0;
 
+/**
+* @brief inner function for printing out nodes in the linked list 
+*/
 void print_line(void *buf) {
     printf("%s", (char *)buf);
 }
 
+/**
+* @brief traverse and print the output list
+*/
 void output_list_print(void *output) {
     linked_list_print(((output_t *)output)->output, print_line);
 }
 
+/**
+* @brief parse the arguments to get flags, searching pattern and files for searching
+*/
 char *parse_args(int argc, char **argv) {
     int opt;
     while ((opt = getopt(argc, argv, "rhn")) != -1) {
@@ -112,6 +124,7 @@ linked_list_t *grep_file(const char *file_name) {
 
     linked_list_t *output = linked_list_new();
 
+    // compile the searching pattern to a regex object
     if (regcomp(&regex, pattern, 0)) {
         fprintf(stderr, "Regex compile failed\n");
         exit(1);
@@ -157,8 +170,7 @@ linked_list_t *grep_file(const char *file_name) {
 }
 
 int add_to_task_list(const char *filename, const struct stat *statptr,
-    int fileflags, struct FTW *pfwt) 
-{
+    int fileflags, struct FTW *pfwt) {
     static int task_num = 0;
     
     if (fileflags == FTW_F) {
@@ -193,7 +205,10 @@ int add_to_task_list(const char *filename, const struct stat *statptr,
 // }
 
 bool is_next_output(output_t *output) {
-    return output->output_num == next_output;
+    pthread_mutex_lock(&next_output_mut);
+    bool flag = output->output_num == next_output;
+    pthread_mutex_unlock(&next_output_mut);
+    return flag;
 }
 
 void print_output() {
@@ -201,7 +216,13 @@ void print_output() {
     where all tasks have been removed, but a thread is still parsing
     a file and hasn't yet written it to output list. files_added_to_output_list
     is only set to true after writing to output list */
-    while (!(linked_list_empty(output_list) && (readers_finished == WORK_THREAD_NUM))) {
+    while (true) {
+        pthread_mutex_lock(&readers_finished_mut);
+        if((linked_list_empty(output_list) && (readers_finished == WORK_THREAD_NUM))) {
+            pthread_mutex_unlock(&readers_finished_mut);
+            break;
+        }
+        pthread_mutex_unlock(&readers_finished_mut);
         output_t *output = linked_list_remove_comp(output_list, (comparator_fn *)is_next_output);
         if (output == NULL)
             continue;
@@ -212,7 +233,11 @@ void print_output() {
             free(line);
         }
         linked_list_free(list, NULL);
+
+        pthread_mutex_lock(&next_output_mut);
         next_output++;
+        printf("loop: %d\n", next_output);
+        pthread_mutex_unlock(&next_output_mut);
     }
     linked_list_free(output_list, NULL);
     linked_list_free(task_list, NULL);
@@ -227,6 +252,7 @@ void *file_reader(void *arg) {
         if (linked_list_empty(task_list) && files_added_to_task_list) {
             pthread_mutex_lock(&readers_finished_mut);
             readers_finished++;
+            printf("reader finished: %d\n", readers_finished);
             pthread_mutex_unlock(&readers_finished_mut);
             pthread_exit(NULL); 
         }
@@ -243,16 +269,14 @@ void *file_reader(void *arg) {
         }
         output->output = res;
         output->output_num = task->task_num;
+        printf("task num: %d\n", task->task_num);
         linked_list_insert_front(output_list, output);
     }
 }
 
 void init_thread_pool() {
-    int err;
-
     for (int i = 0; i < WORK_THREAD_NUM; i++) {
-        if ((err = pthread_create(&thread_pool[i], NULL, file_reader, NULL)) != 0) {
-            errno = err;
+        if ((pthread_create(&thread_pool[i], NULL, file_reader, NULL))) {
             perror("pthread_create error");
             exit(1);
         }
@@ -260,10 +284,11 @@ void init_thread_pool() {
 }
 
 void grep_dir(char *path) {
+    // initialize linked lists for producing output
     task_list = linked_list_new();
     output_list = linked_list_new();
-    /* Iterates over the directory structure starting at path and
-    calls grep_file_wrapper on each file */
+    // Iterates over the directory structure starting at path and
+    // calls grep_file_wrapper on each file
     init_thread_pool();
     nftw(path, add_to_task_list, MAX_FILE_NUM, 0);
     files_added_to_task_list = true;
@@ -272,6 +297,8 @@ void grep_dir(char *path) {
 
 int main(int argc, char *argv[]) {
     struct stat sb;
+    pthread_mutex_init(&readers_finished_mut, NULL);
+    pthread_mutex_init(&next_output_mut, NULL);
 
     char *file_name = parse_args(argc, argv);
 

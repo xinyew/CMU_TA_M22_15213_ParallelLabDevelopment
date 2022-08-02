@@ -180,10 +180,8 @@ int add_to_task_list(const char *filename, const struct stat *statptr,
             perror("malloc failed in pgrep: add_to_task_list");
             exit(1);
         }
-        pthread_mutex_lock(&task_num_mut);
         task->task_num = task_num++;
-        pthread_mutex_unlock(&task_num_mut);
-        printf("set num: %d\n", task->task_num);
+        // printf("set num: %d\n", task->task_num);
         task->file_name = strdup(filename);
         linked_list_insert_front(task_list, task);
     }
@@ -238,10 +236,8 @@ void print_output() {
         }
         linked_list_free(list, NULL);
 
-        pthread_mutex_lock(&next_output_mut);
-        printf("loop: %d\n", next_output);
+        // printf("loop: %d\n", next_output);
         next_output++;
-        pthread_mutex_unlock(&next_output_mut);
     }
     linked_list_free(output_list, NULL);
     linked_list_free(task_list, NULL);
@@ -256,7 +252,6 @@ void *file_reader(void *arg) {
         if (linked_list_empty(task_list) && files_added_to_task_list) {
             pthread_mutex_lock(&readers_finished_mut);
             readers_finished++;
-            printf("reader finished: %d\n", readers_finished);
             pthread_mutex_unlock(&readers_finished_mut);
             pthread_exit(NULL); 
         }
@@ -264,8 +259,6 @@ void *file_reader(void *arg) {
         if (task == NULL)
             continue;
         linked_list_t *res = grep_file(task->file_name);
-        free(task->file_name);
-        free(task);
         output_t *output;
         if ((output = malloc(sizeof(output_t))) == NULL) {
             perror("malloc failed in pgrep: file_reader");
@@ -273,8 +266,10 @@ void *file_reader(void *arg) {
         }
         output->output = res;
         output->output_num = task->task_num;
-        printf("task num: %d\n", task->task_num);
+        // printf("task num: %d\n", task->task_num);
         linked_list_insert_front(output_list, output);
+        free(task->file_name);
+        free(task);
     }
 }
 

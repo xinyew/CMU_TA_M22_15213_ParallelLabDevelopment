@@ -14,7 +14,9 @@ multithreaded!
 #include <regex.h>
 #include <pthread.h>
 #include <errno.h>
+#include <semaphore.h>
 #include "thread-safe-linked-list.h"
+#include <getopt.h>
 
 #define MAX_FILE_NUM 4096
 #define BUF_SIZE 4096
@@ -58,14 +60,16 @@ pthread_t thread_pool[WORK_THREAD_NUM];
 linked_list_t *task_list;
 linked_list_t *output_list;
 
-pthread_mutex_t task_num_mut;
-static int task_num = 0;
+int task_num = 0;
 
 int next_output = 0;
 pthread_mutex_t next_output_mut;
 bool files_added_to_task_list = false;
 pthread_mutex_t readers_finished_mut;
 int readers_finished = 0;
+pthread_mutex_t reading_mut;
+sem_t reading_sem;
+bool reading = false;
 
 /**
 * @brief inner function for printing out nodes in the linked list 
@@ -172,7 +176,7 @@ linked_list_t *grep_file(const char *file_name) {
 }
 
 int add_to_task_list(const char *filename, const struct stat *statptr,
-    int fileflags, struct FTW *pfwt) {
+    int fileflags) {
     
     if (fileflags == FTW_F) {
         task_t *task;
@@ -185,7 +189,7 @@ int add_to_task_list(const char *filename, const struct stat *statptr,
         task->file_name = strdup(filename);
         linked_list_insert_front(task_list, task);
     }
-    return 0; // Tells nftw to continue
+    return 0; // Tells ftw to continue
 }
 
 // function to grep a file bigger than 2MB
@@ -219,15 +223,20 @@ void print_output() {
     a file and hasn't yet written it to output list. files_added_to_output_list
     is only set to true after writing to output list */
     while (true) {
-        pthread_mutex_lock(&readers_finished_mut);
         if((linked_list_empty(output_list) && (readers_finished == WORK_THREAD_NUM))) {
             pthread_mutex_unlock(&readers_finished_mut);
+            reading = false;
             break;
         }
         pthread_mutex_unlock(&readers_finished_mut);
         output_t *output = linked_list_remove_comp(output_list, (comparator_fn *)is_next_output);
-        if (output == NULL)
+        if (output == NULL) {
+            pthread_mutex_lock(&reading_mut);
+            reading = false;
+            pthread_mutex_unlock(&reading_mut);
+            sem_wait(&reading_sem);
             continue;
+        }
         linked_list_t *list = output->output;
         while (!linked_list_empty(list)) {
             char *line = linked_list_remove_front(list);
@@ -268,6 +277,12 @@ void *file_reader(void *arg) {
         output->output_num = task->task_num;
         // printf("task num: %d\n", task->task_num);
         linked_list_insert_front(output_list, output);
+        pthread_mutex_lock(&reading_mut);
+        if (!reading) {
+            reading = true;
+            sem_post(&reading_sem);
+        }
+        pthread_mutex_unlock(&reading_mut);
         free(task->file_name);
         free(task);
     }
@@ -289,7 +304,7 @@ void grep_dir(char *path) {
     // Iterates over the directory structure starting at path and
     // calls grep_file_wrapper on each file
     init_thread_pool();
-    nftw(path, add_to_task_list, MAX_FILE_NUM, 0);
+    ftw(path, add_to_task_list, MAX_FILE_NUM);
     files_added_to_task_list = true;
     print_output();
 }
@@ -297,8 +312,9 @@ void grep_dir(char *path) {
 int main(int argc, char *argv[]) {
     struct stat sb;
     pthread_mutex_init(&readers_finished_mut, NULL);
-    pthread_mutex_init(&task_num_mut, NULL);
     pthread_mutex_init(&next_output_mut, NULL);
+    pthread_mutex_init(&reading_mut, NULL);
+    sem_init(&reading_sem, 0, 0);
 
     char *file_name = parse_args(argc, argv);
 
@@ -321,4 +337,6 @@ int main(int argc, char *argv[]) {
         grep_file(file_name);
     else
         grep_dir(file_name);
+
+    sem_destroy(&reading_sem);
 }

@@ -1,8 +1,10 @@
 /**
-Simple implementation of the unix command line tool grep, but it's 
-multithreaded! 
+Simple implementation of the unix command line tool grep, but it's
+multithreaded!
  */
 
+#include <getopt.h>
+#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <ftw.h>
@@ -72,7 +74,7 @@ sem_t reading_sem;
 bool reading = false;
 
 /**
-* @brief inner function for printing out nodes in the linked list 
+* @brief inner function for printing out nodes in the linked list
 */
 void print_line(void *buf) {
     printf("%s", (char *)buf);
@@ -157,7 +159,7 @@ linked_list_t *grep_file(const char *file_name) {
         }
 
         if (recursive) {
-            if (print_line_numbers) 
+            if (print_line_numbers)
                 sprintf(line, "%s:%d:%s", file_name, line_number, buf);
             else
                 sprintf(line, "%s:%s", file_name, buf);
@@ -177,7 +179,7 @@ linked_list_t *grep_file(const char *file_name) {
 
 int add_to_task_list(const char *filename, const struct stat *statptr,
     int fileflags) {
-    
+
     if (fileflags == FTW_F) {
         task_t *task;
         if ((task = malloc(sizeof(task_t))) == NULL) {
@@ -262,7 +264,7 @@ void *file_reader(void *arg) {
             pthread_mutex_lock(&readers_finished_mut);
             readers_finished++;
             pthread_mutex_unlock(&readers_finished_mut);
-            pthread_exit(NULL); 
+            pthread_exit(NULL);
         }
         task_t *task = linked_list_remove_front(task_list);
         if (task == NULL)
@@ -271,7 +273,7 @@ void *file_reader(void *arg) {
         output_t *output;
         if ((output = malloc(sizeof(output_t))) == NULL) {
             perror("malloc failed in pgrep: file_reader");
-            exit(1); 
+            exit(1);
         }
         output->output = res;
         output->output_num = task->task_num;
